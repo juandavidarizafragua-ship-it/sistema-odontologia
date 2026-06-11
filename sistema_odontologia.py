@@ -297,16 +297,24 @@ if menu == "Agenda":
     # ---- CALENDARIO MENSUAL ----
     st.markdown(f"<div style='text-align:center; font-family:serif; font-size:16px; color:{COLOR}; margin:10px 0;'>{meses_es[mes_sel]} {anio_sel}</div>", unsafe_allow_html=True)
 
-    dias_semana = ["Lun", "Mar", "Mié", "Jue", "Vie", "Sáb", "Dom"]
-    header_html = "".join([f"<div class='cal-day' style='background:transparent; border:none; color:#888; font-weight:600; height:30px;'>{d}</div>" for d in dias_semana])
-    st.markdown(f"<div style='text-align:center;'>{header_html}</div>", unsafe_allow_html=True)
-
     cal = calendar.monthcalendar(anio_sel, mes_sel)
-    cal_html = ""
+    dias_semana = ["Lun", "Mar", "Mi\u00e9", "Jue", "Vie", "S\u00e1b", "Dom"]
+
+    # Construir tabla HTML
+    tabla_html = "<table style='width:100%; border-collapse:collapse; table-layout:fixed;'>"
+
+    # Header
+    tabla_html += "<tr>"
+    for d in dias_semana:
+        tabla_html += f"<th style='padding:8px 4px; text-align:center; color:#888; font-size:12px; font-weight:600; border-bottom:1px solid #333;'>{d}</th>"
+    tabla_html += "</tr>"
+
+    # Semanas
     for semana in cal:
+        tabla_html += "<tr>"
         for dia_num in semana:
             if dia_num == 0:
-                cal_html += "<div class='cal-day cal-fuera'></div>"
+                tabla_html += "<td style='padding:4px; height:70px;'></td>"
                 continue
 
             fecha_dia = date(anio_sel, mes_sel, dia_num)
@@ -315,30 +323,35 @@ if menu == "Agenda":
             es_domingo = fecha_dia.weekday() == 6
             es_festivo = fecha_dia in festivos
             citas_dia = citas_por_dia.get(fecha_str, [])
-            citas_activas = [c for c in citas_dia if c.get("estado") not in ["Cancelada", "No asistió"]]
+            citas_activas = [c for c in citas_dia if c.get("estado") not in ["Cancelada", "No asisti\u00f3"]]
             num_citas = len(citas_activas)
 
-            clase = "cal-normal"
+            # Estilo de la celda
             if es_domingo:
-                clase = "cal-domingo"
+                bg = "#1a1a1a"; brd = "#33333366"; txt_color = "#555"
             elif es_festivo:
-                clase = "cal-festivo"
+                bg = "#2a0a0a"; brd = "#ff444444"; txt_color = "#ff6666"
             elif num_citas > 0:
-                clase = "cal-citas"
+                bg = "#0a2a1a"; brd = "#44ff8844"; txt_color = "#44ff88"
             else:
-                clase = "cal-vacio"
+                bg = "#1a1a0a"; brd = "#C9A84C44"; txt_color = "#C9A84C"
 
-            if es_hoy:
-                clase += " cal-hoy"
-
+            borde_hoy = f"border:2px solid {COLOR};" if es_hoy else f"border:1px solid {brd};"
             info_festivo = festivos.get(fecha_dia, "")
-            tooltip = f"title='{info_festivo}'" if info_festivo else ""
-            citas_texto = f"<div style='font-size:10px;'>{num_citas} citas</div>" if num_citas > 0 else ""
-            festivo_texto = f"<div style='font-size:8px;'>{info_festivo[:12]}</div>" if info_festivo else ""
+            citas_texto = f"<div style='font-size:10px; color:{txt_color};'>{num_citas} citas</div>" if num_citas > 0 else ""
+            festivo_texto = f"<div style='font-size:8px; color:#ff6666;'>{info_festivo[:14]}</div>" if info_festivo else ""
 
-            cal_html += f"<div class='cal-day {clase}' {tooltip}><strong>{dia_num}</strong>{citas_texto}{festivo_texto}</div>"
+            tabla_html += f"""<td style='padding:4px; height:70px; vertical-align:top;'>
+                <div style='background:{bg}; {borde_hoy} border-radius:6px; padding:6px; height:100%; text-align:center;'>
+                    <strong style='color:{txt_color}; font-size:14px;'>{dia_num}</strong>
+                    {citas_texto}{festivo_texto}
+                </div>
+            </td>"""
 
-    st.markdown(f"<div style='text-align:center;'>{cal_html}</div>", unsafe_allow_html=True)
+        tabla_html += "</tr>"
+    tabla_html += "</table>"
+
+    st.markdown(tabla_html, unsafe_allow_html=True)
 
     # Leyenda
     st.markdown(f"""
