@@ -4,6 +4,7 @@ from datetime import datetime, date, timedelta
 import hashlib
 import pandas as pd
 import io
+import os
 import calendar
 
 # -------- CONFIG --------
@@ -23,6 +24,8 @@ USUARIOS = {
     "admin": {"password": hashlib.sha256("admin123".encode()).hexdigest(), "rol": "admin", "sede": "Todas"},
     "recepcion": {"password": hashlib.sha256("recep123".encode()).hexdigest(), "rol": "recepcion", "sede": "Principal"},
 }
+
+ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
 
 # Prefijos de tablas
 T_PACIENTES = f"{SLUG}_pacientes"
@@ -229,7 +232,7 @@ st.markdown(f"""
 if "menu" not in st.session_state:
     st.session_state.menu = "Agenda"
 
-modulos = ["Agenda", "Pacientes", "Historias", "Tratamientos", "Pagos", "Alertas", "Documentos"]
+modulos = ["Agenda", "Pacientes", "Historias", "Tratamientos", "Pagos", "Alertas", "Documentos", "IA"]
 cols = st.columns(len(modulos))
 for i, mod in enumerate(modulos):
     with cols[i]:
@@ -962,6 +965,240 @@ if st.session_state.rol == "admin":
         if procedimientos_list:
             for pr in procedimientos_list:
                 st.markdown(f"- {pr.get('nombre')} — {pr.get('duracion_min')} min — {formato_cop(pr.get('costo'))}")
+
+
+elif menu == "IA":
+    st.markdown(f"<div style='font-family:serif; font-size:20px; color:{COLOR};'>Resumen Inteligente con IA</div>", unsafe_allow_html=True)
+    st.markdown(f"<div style='color:#888; font-size:12px; margin-bottom:16px;'>Analiza tu operaci\u00f3n y genera recomendaciones autom\u00e1ticas con inteligencia artificial</div>", unsafe_allow_html=True)
+
+    # Selector de período
+    ia1, ia2 = st.columns(2)
+    with ia1:
+        periodo = st.selectbox("Per\u00edodo de an\u00e1lisis", ["Últimos 7 d\u00edas", "Últimos 15 d\u00edas", "Últimos 30 d\u00edas", "Este mes"], key="ia_periodo")
+    with ia2:
+        st.markdown(f"<div style='padding-top:28px; color:#888; font-size:11px;'>El an\u00e1lisis usa toda la informaci\u00f3n del sistema</div>", unsafe_allow_html=True)
+
+    dias = {"Últimos 7 d\u00edas": 7, "Últimos 15 d\u00edas": 15, "Últimos 30 d\u00edas": 30, "Este mes": 30}.get(periodo, 7)
+    fecha_desde = str(date.today() - timedelta(days=dias))
+    fecha_hoy = str(date.today())
+
+    if st.button("🧠 Generar Resumen Inteligente", use_container_width=True, key="btn_ia"):
+
+        if not ANTHROPIC_API_KEY:
+            st.error("API key de Anthropic no configurada. Agr\u00e9gala como variable de entorno ANTHROPIC_API_KEY en Render.")
+        else:
+            with st.spinner("Analizando datos con inteligencia artificial..."):
+
+                # ---- RECOLECTAR DATOS ----
+                citas_periodo = sb_get(T_CITAS, f"fecha=gte.{fecha_desde}&fecha=lte.{fecha_hoy}&order=fecha.desc")
+                pacientes_todos = sb_get(T_PACIENTES, "order=created_at.desc")
+                pagos_periodo = sb_get(T_PAGOS, f"fecha_pago=gte.{fecha_desde}&fecha_pago=lte.{fecha_hoy}")
+                tratamientos_activos = sb_get(T_TRATAMIENTOS, "estado=eq.En curso")
+                alertas_pendientes = sb_get(T_ALERTAS, "estado=eq.Pendiente")
+                todas_citas = sb_get(T_CITAS, "order=fecha.desc&limit=500")
+
+                # Métricas calculadas
+                total_citas = len(citas_periodo)
+                completadas = len([c for c in citas_periodo if c.get("estado") == "Completada"])
+                canceladas = len([c for c in citas_periodo if c.get("estado") == "Cancelada"])
+                no_asistio = len([c for c in citas_periodo if c.get("estado") == "No asisti\u00f3"])
+                agendadas = len([c for c in citas_periodo if c.get("estado") in ["Agendada", "Confirmada"]])
+
+                ingresos_periodo = sum(p.get("monto", 0) or 0 for p in pagos_periodo)
+
+                # Pacientes nuevos en el período
+                pacientes_nuevos = len([p for p in pacientes_todos if p.get("created_at", "")[:10] >= fecha_desde])
+
+                # Pacientes que no han vuelto en 30+ días
+                pacientes_inactivos = []
+                for pac in pacientes_todos:
+                    if pac.get("estado") != "Activo":
+                        continue
+                    citas_pac = [c for c in todas_citas if c.get("paciente_id") == pac.get("id") and c.get("estado") == "Completada"]
+                    if citas_pac:
+                        ultima_cita = max(c.get("fecha", "") for c in citas_pac)
+                        if ultima_cita and ultima_cita < str(date.today() - timedelta(days=30)):
+                            pacientes_inactivos.append({
+                                "nombre": pac.get("nombre"),
+                                "ultima_cita": ultima_cita,
+                                "telefono": pac.get("telefono", "")
+                            })
+
+                # Tratamientos con saldo pendiente
+                tratamientos_con_saldo = []
+                for t in tratamientos_activos:
+                    saldo = (t.get("costo_total", 0) or 0) - (t.get("abonado", 0) or 0)
+                    if saldo > 0:
+                        tratamientos_con_saldo.append({
+                            "paciente": t.get("paciente_nombre"),
+                            "tipo": t.get("tipo"),
+                            "saldo": saldo,
+                            "sesiones_faltantes": (t.get("sesiones_total", 0) or 0) - (t.get("sesiones_completadas", 0) or 0)
+                        })
+
+                saldo_total_pendiente = sum(t["saldo"] for t in tratamientos_con_saldo)
+
+                # Procedimientos más frecuentes
+                procedimientos_count = {}
+                for c in citas_periodo:
+                    proc = c.get("procedimiento", "Otro")
+                    procedimientos_count[proc] = procedimientos_count.get(proc, 0) + 1
+                top_procedimientos = sorted(procedimientos_count.items(), key=lambda x: x[1], reverse=True)[:5]
+
+                # Odontólogos y su carga
+                odon_count = {}
+                for c in citas_periodo:
+                    if c.get("estado") in ["Completada", "Confirmada", "Agendada"]:
+                        odon = c.get("odontologo", "N/A")
+                        odon_count[odon] = odon_count.get(odon, 0) + 1
+
+                # Tasa de cancelación
+                tasa_cancelacion = round(((canceladas + no_asistio) / total_citas * 100), 1) if total_citas > 0 else 0
+                tasa_asistencia = round((completadas / total_citas * 100), 1) if total_citas > 0 else 0
+
+                # ---- CONSTRUIR PROMPT ----
+                prompt = f"""Eres un consultor de negocios experto en clínicas odontológicas en Colombia. Analiza los siguientes datos de la clínica "{NOMBRE_CLINICA}" y genera un resumen ejecutivo con recomendaciones accionables.
+
+PERÍODO ANALIZADO: {fecha_desde} a {fecha_hoy} ({dias} días)
+
+MÉTRICAS DE CITAS:
+- Total de citas en el período: {total_citas}
+- Completadas: {completadas}
+- Canceladas: {canceladas}
+- No asistieron: {no_asistio}
+- Pendientes/Agendadas: {agendadas}
+- Tasa de cancelación + inasistencia: {tasa_cancelacion}%
+- Tasa de asistencia efectiva: {tasa_asistencia}%
+
+MÉTRICAS FINANCIERAS:
+- Ingresos del período: ${ingresos_periodo:,.0f} COP
+- Saldo total pendiente por cobrar: ${saldo_total_pendiente:,.0f} COP
+- Tratamientos activos con saldo: {len(tratamientos_con_saldo)}
+
+PACIENTES:
+- Total registrados: {len(pacientes_todos)}
+- Nuevos en el período: {pacientes_nuevos}
+- Inactivos (sin venir en 30+ días): {len(pacientes_inactivos)}
+
+PROCEDIMIENTOS MÁS FRECUENTES:
+{chr(10).join([f"- {p[0]}: {p[1]} citas" for p in top_procedimientos]) if top_procedimientos else "- Sin datos"}
+
+CARGA POR ODONTÓLOGO:
+{chr(10).join([f"- {o}: {c} citas" for o, c in odon_count.items()]) if odon_count else "- Sin datos"}
+
+ALERTAS PENDIENTES: {len(alertas_pendientes)}
+
+PACIENTES INACTIVOS (no vienen hace 30+ días):
+{chr(10).join([f"- {p['nombre']} (última cita: {p['ultima_cita']})" for p in pacientes_inactivos[:10]]) if pacientes_inactivos else "- Ninguno"}
+
+TRATAMIENTOS CON SALDO PENDIENTE:
+{chr(10).join([f"- {t['paciente']}: {t['tipo']} — Saldo: ${t['saldo']:,.0f} — Faltan {t['sesiones_faltantes']} sesiones" for t in tratamientos_con_saldo[:10]]) if tratamientos_con_saldo else "- Ninguno"}
+
+Genera el resumen con estas secciones exactas:
+
+1. RESUMEN EJECUTIVO (3-4 oraciones con lo más importante)
+2. INDICADORES CLAVE (los números más relevantes con interpretación)
+3. ALERTAS Y RIESGOS (qué necesita atención inmediata)
+4. OPORTUNIDADES DE INGRESO (dinero que se está dejando de ganar)
+5. PACIENTES PARA CONTACTAR HOY (lista específica con nombres y razón)
+6. RECOMENDACIONES (3-5 acciones concretas ordenadas por prioridad)
+
+Sé directo, específico y accionable. No uses lenguaje genérico. Menciona nombres de pacientes y números concretos. Habla en español colombiano profesional."""
+
+                # ---- LLAMAR A CLAUDE ----
+                try:
+                    r = requests.post(
+                        "https://api.anthropic.com/v1/messages",
+                        headers={
+                            "x-api-key": ANTHROPIC_API_KEY,
+                            "anthropic-version": "2023-06-01",
+                            "Content-Type": "application/json"
+                        },
+                        json={
+                            "model": "claude-haiku-4-5-20251001",
+                            "max_tokens": 1500,
+                            "messages": [{"role": "user", "content": prompt}]
+                        },
+                        timeout=30
+                    )
+
+                    if r.status_code == 200:
+                        response_data = r.json()
+                        resumen_ia = ""
+                        for block in response_data.get("content", []):
+                            if block.get("type") == "text":
+                                resumen_ia += block["text"]
+
+                        # ---- MOSTRAR RESUMEN ----
+                        st.markdown("<hr class='dv'>", unsafe_allow_html=True)
+
+                        # Métricas rápidas arriba
+                        m1, m2, m3, m4 = st.columns(4)
+                        with m1:
+                            st.markdown(f"<div class='mc'><div class='mn'>{total_citas}</div><div class='ml'>CITAS</div></div>", unsafe_allow_html=True)
+                        with m2:
+                            color_tasa = "#44ff88" if tasa_cancelacion < 15 else ("#ffaa44" if tasa_cancelacion < 30 else "#ff4444")
+                            st.markdown(f"<div class='mc'><div class='mn' style='font-size:32px; color:{color_tasa};'>{tasa_asistencia}%</div><div class='ml'>ASISTENCIA</div></div>", unsafe_allow_html=True)
+                        with m3:
+                            st.markdown(f"<div class='mc'><div class='mn' style='font-size:28px; color:#44ff88;'>{formato_cop(ingresos_periodo)}</div><div class='ml'>INGRESOS</div></div>", unsafe_allow_html=True)
+                        with m4:
+                            st.markdown(f"<div class='mc'><div class='mn' style='font-size:28px; color:#ff8844;'>{formato_cop(saldo_total_pendiente)}</div><div class='ml'>POR COBRAR</div></div>", unsafe_allow_html=True)
+
+                        st.markdown("<hr class='dv'>", unsafe_allow_html=True)
+
+                        # Resumen de IA
+                        st.markdown(f"""
+                        <div style='background:#0a1a1a; border:1px solid {COLOR}33; border-radius:10px; padding:24px 28px; margin:10px 0;'>
+                            <div style='display:flex; align-items:center; gap:8px; margin-bottom:16px;'>
+                                <span style='font-size:20px;'>🧠</span>
+                                <span style='font-family:serif; font-size:16px; color:{COLOR}; letter-spacing:2px;'>AN\u00c1LISIS INTELIGENTE</span>
+                                <span style='font-size:10px; color:#555; margin-left:auto;'>Generado por IA — {fecha_hoy}</span>
+                            </div>
+                            <div style='color:#e0e0e0; font-size:13px; line-height:1.8; white-space:pre-wrap;'>{resumen_ia}</div>
+                        </div>
+                        """, unsafe_allow_html=True)
+
+                        # Botón para exportar
+                        resumen_texto = f"RESUMEN INTELIGENTE — {NOMBRE_CLINICA}\n"
+                        resumen_texto += f"Período: {fecha_desde} a {fecha_hoy}\n"
+                        resumen_texto += f"{'='*50}\n\n"
+                        resumen_texto += f"MÉTRICAS: {total_citas} citas | {tasa_asistencia}% asistencia | "
+                        resumen_texto += f"Ingresos: ${ingresos_periodo:,.0f} | Por cobrar: ${saldo_total_pendiente:,.0f}\n\n"
+                        resumen_texto += resumen_ia
+
+                        st.download_button(
+                            "📋 Descargar resumen",
+                            resumen_texto,
+                            f"resumen_ia_{fecha_hoy}.txt",
+                            mime="text/plain",
+                            key="dl_resumen"
+                        )
+
+                    else:
+                        st.error(f"Error de IA: {r.status_code} — {r.text[:200]}")
+
+                except requests.exceptions.Timeout:
+                    st.error("La IA tard\u00f3 demasiado en responder. Int\u00e9ntalo de nuevo.")
+                except Exception as e:
+                    st.error(f"Error: {e}")
+
+    # ---- HISTORIAL DE RESÚMENES ----
+    st.markdown("<hr class='dv'>", unsafe_allow_html=True)
+    st.markdown(f"""
+    <div style='background:#111; border:1px solid {COLOR}22; border-radius:8px; padding:16px 20px; margin:10px 0;'>
+        <div style='font-family:serif; font-size:13px; color:{COLOR}; margin-bottom:8px;'>¿Qu\u00e9 analiza la IA?</div>
+        <div style='color:#888; font-size:12px; line-height:1.8;'>
+            ✓ Citas completadas, canceladas y no asistencias<br>
+            ✓ Ingresos y saldos pendientes por cobrar<br>
+            ✓ Pacientes nuevos vs pacientes que no han vuelto<br>
+            ✓ Procedimientos m\u00e1s frecuentes<br>
+            ✓ Carga de trabajo por odont\u00f3logo<br>
+            ✓ Tratamientos activos con sesiones pendientes<br>
+            ✓ Alertas sin resolver<br>
+            ✓ Recomendaciones personalizadas con nombres y acciones concretas
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
 
 
 # -------- FOOTER --------
